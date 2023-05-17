@@ -1,4 +1,6 @@
-.env
-.env.local
+Dockerfile
+.dockerignore
 node_modules
-test-results
+npm-debug.log
+README.md
+.git
