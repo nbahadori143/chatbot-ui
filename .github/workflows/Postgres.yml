@@ -1,54 +1,63 @@
-name: Deploy to main
-on:
-  push:
-    branches: [main]
+name: Install Nomad-Pack and Deploy to Nomad
+
+on: 
+  workflow_dispatch:
 
 env:
   ACR_LOGON_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
-  IMAGE_NAME_CLOUDSTATION: ${{ secrets.ACR_NAME }}.azurecr.io/JavaScript_40:latest
+  IMAGE_NAME_CLOUDSTATION: ${{ secrets.ACR_NAME }}.azurecr.io/babilou-qt-backend:latest
   NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
 
 jobs:
-  build-push-image:
+  build:
+    name: Install Nomad-Pack
     runs-on: ubuntu-latest
-
     steps:
-      # checkout the repo
-      - name: 'Checkout GitHub Action'
-        uses: actions/checkout@master
+    - name: Check out code
+      uses: actions/checkout@v2
 
-      - name: 'Login to Azure Container Registry'
-        uses: azure/docker-login@v1
-        with:
-          login-server: ${{ env.ACR_LOGON_SERVER }}
-          username: ${{ secrets.SERVICE_PRINCIPAL_ID }}
-          password: ${{ secrets.SERVICE_PRINCIPAL_PASSWORD }}
+    - name: Install make
+      run: sudo apt-get install make
 
-      - name: 'Build and push javascript-40 image'
-        run: |
-          docker build javascript-40 -t ${{ env.IMAGE_NAME_CLOUDSTATION }} .
-          docker push ${{ env.IMAGE_NAME_CLOUDSTATION }}
+    - name: Set up Go
+      run: |
+        wget https://go.dev/dl/go1.20.4.linux-amd64.tar.gz
+        sudo tar -C /usr/local -xzf go1.20.4.linux-amd64.tar.gz
+        echo "PATH=$PATH:/usr/local/go/bin" >> $GITHUB_ENV
 
-  deploy-to-nomad:
-    needs: build-push-image
-    runs-on: ubuntu-latest
+    - name: Verify Go version
+      run: go version
 
-    steps:
-      # checkout the repo
-      - name: 'Checkout GitHub Action'
-        uses: actions/checkout@master
+    - name: Download and Build Nomad-Pack
+      run: |
+        git clone https://github.com/hashicorp/nomad-pack.git
+        cd nomad-pack
+        make dev
+        echo "PATH=$PATH:$(pwd)/bin" >> $GITHUB_ENV
 
-      - run: sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
-      - run: wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
-      - run: gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
-      - run: echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-      - run: sudo apt update
-      - run: sudo apt-get install nomad --fix-missing
+    - name: Verify Nomad-Pack installation
+      run: nomad-pack version
 
-      # Deploy to Nomad Cluster dev
-      - name: 'Deploy to Nomad Cluster dev'
-        run: nomad job run main.hcl
-        working-directory: .deploy
-        env:
-          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
-          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN }}
+    - name: Add private registry
+      run: |
+          nomad-pack registry add my-registry ${{ secrets.NOMAD_PACK_REGISTRY }}
+          nomad-pack registry list
+
+        
+    - name: 'Create pack variables file'
+      run: |
+        cat <<EOF > variables.hcl
+        service_name = "babilou-qt-backend"
+        service_port = 3000
+        service_tags = ["api", "urlprefix-babilou-qt-backend-master.blockchainr.app/"]
+        service_check_interval = "10s"
+        service_check_timeout = "2s"
+        image = "acrbc001.azurecr.io/babilou-qt-backend:latest"
+        EOF
+
+    - name: Run `nomad-pack info` for `simple_service`
+      run: nomad-pack run -var-file=variables.hcl simple_service 
+      env:
+        NOMAD_ADDR: "${{ secrets.NOMAD_ADDR }}"
+        NOMAD_TOKEN: "${{ secrets.NOMAD_TOKEN }}"
+      continue-on-error: true
